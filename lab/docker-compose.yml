@@ -1,0 +1,34 @@
+services:
+  jupyter-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ../..:/workspace
+    networks:
+      - ml-sec-lab
+    environment:
+      - JUPYTER_TOKEN=cybersec2024
+    restart: unless-stopped
+
+  model-api:
+    build:
+      context: ../../
+      dockerfile: lab/Dockerfile.api
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../../models:/app/models
+    networks:
+      - ml-sec-lab
+    environment:
+      - MODEL_PATH=/app/models/ids_baseline.pt
+    restart: unless-stopped
+    depends_on:
+      - jupyter-lab
+
+networks:
+  ml-sec-lab:
+    driver: bridge

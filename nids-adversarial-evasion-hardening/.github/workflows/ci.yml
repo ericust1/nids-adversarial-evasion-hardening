@@ -1,0 +1,114 @@
+name: NIDS Evasion Pipeline CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+ test-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/unit/ -v --tb=short
+
+      - name: Run integration tests
+        run: |
+          python -m pytest tests/integration/ -v --tb=short
+
+      - name: Validate baseline accuracy threshold
+        run: |
+          python -c "
+          import sys, torch
+          sys.path.insert(0, '.')
+          from src.core.dataset_loader import DatasetManager
+          from src.core.model_trainer import IDSModel
+          from torch.utils.data import TensorDataset, DataLoader
+
+          torch.manual_seed(42)
+          dm = DatasetManager()
+          X, y = dm.generate_synthetic_traffic(n_samples=2000)
+          dm.X_train, dm.X_test, dm.y_train, dm.y_test = dm.split_data(
+              X, y, test_size=0.2, stratify=True
+          )
+
+          device = torch.device('cpu')
+          n_features = dm.X_train.shape[1]
+          model = IDSModel(input_dim=n_features).to(device)
+
+          train_ds = TensorDataset(
+              torch.FloatTensor(dm.X_train), torch.LongTensor(dm.y_train)
+          )
+          train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+
+          model.train_model(train_loader, epochs=10, lr=0.001, device=device)
+          model.eval()
+
+          test_ds = TensorDataset(
+              torch.FloatTensor(dm.X_test), torch.LongTensor(dm.y_test)
+          )
+          test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
+
+          metrics = model.evaluate(test_loader, device=device)
+          print('Baseline Accuracy: {:.4f}'.format(metrics['accuracy']))
+          assert metrics['accuracy'] >= 0.70, 'Baseline accuracy below 70%% threshold'
+          print('Baseline accuracy check PASSED')
+          "
+
+      - name: Validate adversarial training pipeline
+        run: |
+          python -c "
+          import sys, torch
+          sys.path.insert(0, '.')
+          from src.core.dataset_loader import DatasetManager
+          from src.core.model_trainer import IDSModel
+          from src.modules.adversarial_training import AdversarialTrainer
+          from src.core.adversarial_generator import AdversarialAttackEngine
+          from torch.utils.data import TensorDataset, DataLoader
+
+          torch.manual_seed(42)
+          dm = DatasetManager()
+          X, y = dm.generate_synthetic_traffic(n_samples=1500)
+          dm.X_train, dm.X_test, dm.y_train, dm.y_test = dm.split_data(
+              X, y, test_size=0.2, stratify=True
+          )
+
+          device = torch.device('cpu')
+          n_features = dm.X_train.shape[1]
+
+          model = IDSModel(input_dim=n_features).to(device)
+          train_ds = TensorDataset(
+              torch.FloatTensor(dm.X_train), torch.LongTensor(dm.y_train)
+          )
+          train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+
+          trainer = AdversarialTrainer(model, device)
+          trainer.adversarial_train(
+              train_loader, epochs=5, lr=0.001,
+              epsilon=0.1, mix_ratio=0.5
+          )
+
+          test_ds = TensorDataset(
+              torch.FloatTensor(dm.X_test), torch.LongTensor(dm.y_test)
+          )
+          test_loader_clean = DataLoader(test_ds, batch_size=64, shuffle=False)
+
+          results = trainer.evaluate_hardened_model(test_loader_clean, test_loader_clean, device)
+          print('Clean accuracy: {:.4f}'.format(results['clean_accuracy']))
+          print('Adversarial training completed successfully')
+          "
